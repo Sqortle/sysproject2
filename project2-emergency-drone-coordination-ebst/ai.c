@@ -1,4 +1,5 @@
 #include "headers/ai.h"
+#include "headers/survivor.h"
 #include <limits.h>
 #include <stdio.h>
 #include <string.h> 
@@ -21,8 +22,7 @@ void assign_mission(Drone *drone, Coord target, const char *mission_id) {
     json_object_object_add(mission, "target", target_obj);
     json_object_object_add(mission, "expiry", json_object_new_int64(time(NULL) + 3600));
     json_object_object_add(mission, "checksum", json_object_new_string("a1b2c3"));
-    const char *json_str = json_object_to_json_string_ext(mission, JSON_C_TO_STRING_PLAIN);
-    send(drone->sock, json_str, strlen(json_str), 0);
+    send_json(drone->sock, mission);
     json_object_put(mission);
     pthread_mutex_unlock(&drone->lock);
 }

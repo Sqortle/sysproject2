@@ -3,6 +3,11 @@
 #include "coord.h"
 #include <time.h>
 #include "list.h"
+#include <pthread.h>
+
+#define WAITING 0
+#define ASSIGNED 1
+#define HELPED 2
 
 typedef struct survivor {
     int status;
@@ -10,6 +15,7 @@ typedef struct survivor {
     struct tm discovery_time;
     struct tm helped_time;
     char info[25];
+    pthread_mutex_t lock;  // Add mutex lock for thread safety
 } Survivor;
 
 extern List *survivors;

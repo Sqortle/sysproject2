@@ -12,34 +12,146 @@
 #include "headers/map.h"
 #include "headers/drone.h"
 #include "headers/survivor.h"
+#include "headers/communication.h"
+#include "headers/view.h"
 
 #define PORT 8080
 #define MAX_DRONES 10
 #define BUFFER_SIZE 4096
 
 void *handle_drone(void *arg);
-void send_json(int sock, struct json_object *jobj);
-struct json_object *receive_json(int sock);
 void process_handshake(int sock, struct json_object *jobj);
 void process_status_update(int sock, struct json_object *jobj);
 void process_mission_complete(int sock, struct json_object *jobj);
 void process_heartbeat_response(int sock, struct json_object *jobj);
+void *heartbeat_thread(void *arg);
+void *view_thread_func(void *arg);
 
-int main() {
+// Global mutex for initialization
+pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
+int initialized = 0;
+
+int initialize_globals() {
+    pthread_mutex_lock(&init_mutex);
+    if (initialized) {
+        pthread_mutex_unlock(&init_mutex);
+        return 0;
+    }
+
+    printf("Initializing lists...\n");
     survivors = create_list(sizeof(Survivor), 1000);
+    if (!survivors) {
+        printf("Failed to create survivors list\n");
+        pthread_mutex_unlock(&init_mutex);
+        return 1;
+    }
+    printf("Survivors list created\n");
+
     helpedsurvivors = create_list(sizeof(Survivor), 1000);
+    if (!helpedsurvivors) {
+        printf("Failed to create helped survivors list\n");
+        survivors->destroy(survivors);
+        pthread_mutex_unlock(&init_mutex);
+        return 1;
+    }
+    printf("Helped survivors list created\n");
+
     drones = create_list(sizeof(Drone), MAX_DRONES);
+    if (!drones) {
+        printf("Failed to create drones list\n");
+        survivors->destroy(survivors);
+        helpedsurvivors->destroy(helpedsurvivors);
+        pthread_mutex_unlock(&init_mutex);
+        return 1;
+    }
+    printf("Drones list created with capacity %d\n", MAX_DRONES);
+
+    printf("Initializing map...\n");
     init_map(40, 30);
 
-    pthread_t survivor_thread;
-    pthread_create(&survivor_thread, NULL, survivor_generator, NULL);
+    initialized = 1;
+    pthread_mutex_unlock(&init_mutex);
+    return 0;
+}
 
+void cleanup_globals() {
+    pthread_mutex_lock(&init_mutex);
+    if (!initialized) {
+        pthread_mutex_unlock(&init_mutex);
+        return;
+    }
+
+    if (survivors) {
+        survivors->destroy(survivors);
+        survivors = NULL;
+    }
+    if (helpedsurvivors) {
+        helpedsurvivors->destroy(helpedsurvivors);
+        helpedsurvivors = NULL;
+    }
+    if (drones) {
+        drones->destroy(drones);
+        drones = NULL;
+    }
+    freemap();
+    initialized = 0;
+    pthread_mutex_unlock(&init_mutex);
+}
+
+int main() {
+    if (initialize_globals() != 0) {
+        printf("Failed to initialize globals\n");
+        return 1;
+    }
+
+    // Initialize SDL and create window
+    if (init_sdl_window() != 0) {
+        printf("Failed to initialize SDL window\n");
+        cleanup_globals();
+        return 1;
+    }
+    printf("SDL window initialized successfully\n");
+
+    // Create view thread for visualization
+    pthread_t view_thread;
+    if (pthread_create(&view_thread, NULL, view_thread_func, NULL) != 0) {
+        printf("Failed to create view thread\n");
+        cleanup_globals();
+        return 1;
+    }
+    printf("View thread created\n");
+
+    // Create survivor generator thread
+    pthread_t survivor_thread;
+    if (pthread_create(&survivor_thread, NULL, survivor_generator, NULL) != 0) {
+        printf("Failed to create survivor generator thread\n");
+        cleanup_globals();
+        return 1;
+    }
+    printf("Survivor generator thread created\n");
+
+    // Create AI controller thread
     pthread_t ai_thread;
-    pthread_create(&ai_thread, NULL, ai_controller, NULL);
+    if (pthread_create(&ai_thread, NULL, ai_controller, NULL) != 0) {
+        printf("Failed to create AI controller thread\n");
+        cleanup_globals();
+        return 1;
+    }
+    printf("AI controller thread created\n");
+
+    // Create heartbeat thread
+    pthread_t heartbeat_thread_id;
+    if (pthread_create(&heartbeat_thread_id, NULL, heartbeat_thread, NULL) != 0) {
+        printf("Failed to create heartbeat thread\n");
+        cleanup_globals();
+        return 1;
+    }
+    printf("Heartbeat thread created\n");
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("Socket creation failed");
+        cleanup_globals();
         exit(EXIT_FAILURE);
     }
 
@@ -55,12 +167,14 @@ int main() {
     if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("Bind failed");
         close(server_fd);
+        cleanup_globals();
         exit(EXIT_FAILURE);
     }
 
     if (listen(server_fd, MAX_DRONES) < 0) {
         perror("Listen failed");
         close(server_fd);
+        cleanup_globals();
         exit(EXIT_FAILURE);
     }
 
@@ -83,10 +197,7 @@ int main() {
     }
 
     close(server_fd);
-    freemap();
-    survivors->destroy(survivors);
-    helpedsurvivors->destroy(helpedsurvivors);
-    drones->destroy(drones);
+    cleanup_globals();
     return 0;
 }
 
@@ -146,77 +257,59 @@ void *handle_drone(void *arg) {
     return NULL;
 }
 
-void send_json(int sock, struct json_object *jobj) {
-    const char *json_str = json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PLAIN);
-    size_t len = strlen(json_str);
-    char *msg = malloc(len + 2);
-    snprintf(msg, len + 2, "%s\n", json_str);
-    send(sock, msg, strlen(msg), 0);
-    free(msg);
-}
-
-struct json_object *receive_json(int sock) {
-    static char buffer[BUFFER_SIZE] = {0};
-    static size_t buf_pos = 0;
-
-    while (1) {
-        // Check for complete message (newline-terminated)
-        char *newline = strchr(buffer, '\n');
-        if (newline) {
-            *newline = '\0';
-            struct json_object *jobj = json_tokener_parse(buffer);
-            if (!jobj) {
-                printf("Failed to parse JSON: %s\n", buffer);
-            }
-            // Shift remaining data
-            size_t len = newline - buffer + 1;
-            memmove(buffer, newline + 1, buf_pos - len);
-            buf_pos -= len;
-            return jobj;
-        }
-
-        // Read more data
-        int bytes = recv(sock, buffer + buf_pos, BUFFER_SIZE - buf_pos - 1, 0);
-        if (bytes <= 0) {
-            if (buf_pos > 0) {
-                buffer[buf_pos] = '\0';
-                struct json_object *jobj = json_tokener_parse(buffer);
-                buf_pos = 0;
-                return jobj;
-            }
-            return NULL;
-        }
-        buf_pos += bytes;
-        buffer[buf_pos] = '\0';
-        printf("Received %d bytes on sock %d: %s\n", bytes, sock, buffer + buf_pos - bytes);
-    }
-}
-
 void process_handshake(int sock, struct json_object *jobj) {
     const char *drone_id = json_object_get_string(json_object_object_get(jobj, "drone_id"));
     printf("Processing HANDSHAKE for drone_id=%s\n", drone_id);
+    
+    if (!drones) {
+        printf("Error: drones list is NULL\n");
+        struct json_object *error = json_object_new_object();
+        json_object_object_add(error, "type", json_object_new_string("ERROR"));
+        json_object_object_add(error, "code", json_object_new_int(500));
+        json_object_object_add(error, "message", json_object_new_string("Internal server error: drones list not initialized"));
+        send_json(sock, error);
+        json_object_put(error);
+        return;
+    }
+    
+    printf("Allocating memory for drone...\n");
     Drone *drone = malloc(sizeof(Drone));
-    if (!drone) return;
+    if (!drone) {
+        printf("Failed to allocate memory for drone\n");
+        struct json_object *error = json_object_new_object();
+        json_object_object_add(error, "type", json_object_new_string("ERROR"));
+        json_object_object_add(error, "code", json_object_new_int(500));
+        json_object_object_add(error, "message", json_object_new_string("Internal server error"));
+        send_json(sock, error);
+        json_object_put(error);
+        return;
+    }
+    printf("Memory allocated successfully\n");
+
+    printf("Initializing drone data...\n");
     memset(drone, 0, sizeof(Drone));
     drone->id = atoi(drone_id + 1); // Extract number from "D1"
     drone->status = IDLE;
-    drone->coord = (Coord){rand() % map.width, rand() % map.height};
-    drone->target = drone->coord;
     drone->sock = sock;
     pthread_mutex_init(&drone->lock, NULL);
 
-    pthread_mutex_lock(&drones->lock);
+    printf("Adding drone to list...\n");
+    printf("Entering add function...\n");
     drones->add(drones, drone);
-    pthread_mutex_unlock(&drones->lock);
+    printf("Drone added to list\n");
 
+    // Send HANDSHAKE_ACK response
     struct json_object *ack = json_object_new_object();
     json_object_object_add(ack, "type", json_object_new_string("HANDSHAKE_ACK"));
-    json_object_object_add(ack, "session_id", json_object_new_string("S123"));
+    json_object_object_add(ack, "session_id", json_object_new_string(drone_id));
+    
     struct json_object *config = json_object_new_object();
     json_object_object_add(config, "status_update_interval", json_object_new_int(5));
     json_object_object_add(config, "heartbeat_interval", json_object_new_int(10));
     json_object_object_add(ack, "config", config);
+    
     send_json(sock, ack);
+    printf("Sent HANDSHAKE_ACK to drone %s\n", drone_id);
     json_object_put(ack);
 }
 
@@ -299,3 +392,27 @@ void process_heartbeat_response(int sock, struct json_object *jobj) {
     }
     pthread_mutex_unlock(&drones->lock);
 }
+
+void *heartbeat_thread(void *arg) {
+    while (1) {
+        sleep(10); // Send heartbeat every 10 seconds
+        pthread_mutex_lock(&drones->lock);
+        Node *node = drones->head;
+        while (node != NULL) {
+            Drone *d = (Drone *)node->data;
+            if (d->status != DISCONNECTED) {
+                struct json_object *heartbeat = json_object_new_object();
+                json_object_object_add(heartbeat, "type", json_object_new_string("HEARTBEAT"));
+                json_object_object_add(heartbeat, "timestamp", json_object_new_int64(time(NULL)));
+                send_json(d->sock, heartbeat);
+                printf("Sent HEARTBEAT to drone D%d\n", d->id);
+                json_object_put(heartbeat);
+            }
+            node = node->next;
+        }
+        pthread_mutex_unlock(&drones->lock);
+    }
+    return NULL;
+}
+
+void *view_thread_func(void *arg); // Only declaration, no implementation here

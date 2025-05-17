@@ -4,7 +4,7 @@ UNAME := $(shell uname -s)
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -g -pthread -Iheaders
-LDFLAGS = -ljson-c
+LDFLAGS = -ljson-c -lSDL2
 
 # Platform-specific SDL2 flags
 ifeq ($(UNAME), Linux)
@@ -15,7 +15,7 @@ ifeq ($(UNAME), Darwin)
 endif
 
 # Source files
-SERVER_SRC = server.c list.c map.c survivor.c ai.c view.c globals.c
+SERVER_SRC = server.c list.c map.c survivor.c ai.c view.c globals.c communication.c
 CLIENT_SRC = drone_client.c
 HEADERS = headers/list.h headers/map.h headers/drone.h headers/survivor.h headers/ai.h headers/coord.h headers/globals.h headers/view.h
 

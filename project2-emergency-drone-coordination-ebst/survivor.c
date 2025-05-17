@@ -16,7 +16,8 @@ Survivor *create_survivor(Coord *coord, char *info, struct tm *discovery_time) {
     memcpy(&s->discovery_time, discovery_time, sizeof(struct tm));
     strncpy(s->info, info, sizeof(s->info) - 1);
     s->info[sizeof(s->info) - 1] = '\0';
-    s->status = 0;
+    s->status = WAITING;
+    pthread_mutex_init(&s->lock, NULL);
     return s;
 }
 
@@ -51,8 +52,12 @@ void *survivor_generator(void *args) {
 }
 
 void survivor_cleanup(Survivor *s) {
+    if (!s) return;
+    
     pthread_mutex_lock(&map.cells[s->coord.x][s->coord.y].survivors->lock);
     map.cells[s->coord.x][s->coord.y].survivors->removedata(map.cells[s->coord.x][s->coord.y].survivors, s);
     pthread_mutex_unlock(&map.cells[s->coord.x][s->coord.y].survivors->lock);
+    
+    pthread_mutex_destroy(&s->lock);
     free(s);
 }

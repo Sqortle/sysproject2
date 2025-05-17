@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <json-c/json.h>
 #include <time.h>
 #include "headers/drone.h"
@@ -137,11 +138,41 @@ int main() {
 }
 
 void send_json(int sock, struct json_object *jobj) {
+    if (!jobj) {
+        printf("Error: NULL json object passed to send_json\n");
+        return;
+    }
+
     const char *json_str = json_object_to_json_string_ext(jobj, JSON_C_TO_STRING_PLAIN);
+    if (!json_str) {
+        printf("Error: Failed to convert json object to string\n");
+        return;
+    }
+
     size_t len = strlen(json_str);
     char *msg = malloc(len + 2);
+    if (!msg) {
+        printf("Error: Failed to allocate memory for message\n");
+        return;
+    }
+    
     snprintf(msg, len + 2, "%s\n", json_str);
-    send(sock, msg, strlen(msg), 0);
+    printf("Attempting to send message: %s", msg);
+    
+    ssize_t total_sent = 0;
+    size_t remaining = strlen(msg);
+    
+    while (total_sent < remaining) {
+        ssize_t sent = send(sock, msg + total_sent, remaining - total_sent, 0);
+        if (sent < 0) {
+            printf("Error sending message: %s (errno: %d)\n", strerror(errno), errno);
+            free(msg);
+            return;
+        }
+        total_sent += sent;
+    }
+    
+    printf("Successfully sent %zd bytes\n", total_sent);
     free(msg);
 }
 
@@ -153,6 +184,7 @@ struct json_object *receive_json(int sock) {
         char *newline = strchr(buffer, '\n');
         if (newline) {
             *newline = '\0';
+            printf("Received complete message: %s\n", buffer);
             struct json_object *jobj = json_tokener_parse(buffer);
             if (!jobj) {
                 printf("Failed to parse JSON: %s\n", buffer);
@@ -165,8 +197,12 @@ struct json_object *receive_json(int sock) {
 
         int bytes = recv(sock, buffer + buf_pos, BUFFER_SIZE - buf_pos - 1, 0);
         if (bytes <= 0) {
+            if (bytes < 0) {
+                printf("Error receiving data: %s (errno: %d)\n", strerror(errno), errno);
+            }
             if (buf_pos > 0) {
                 buffer[buf_pos] = '\0';
+                printf("Received partial message: %s\n", buffer);
                 struct json_object *jobj = json_tokener_parse(buffer);
                 buf_pos = 0;
                 return jobj;

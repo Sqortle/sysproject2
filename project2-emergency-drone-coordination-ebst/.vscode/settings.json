@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "communication.h": "c",
+        "stdio.h": "c",
+        "stdlib.h": "c"
+    }
+}
