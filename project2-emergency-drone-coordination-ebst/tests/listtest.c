@@ -19,7 +19,7 @@ int main() {
     printf("\n\nadd elements to the list\n");
     for (int i = 0; i < n; i++) {
         Survivor s;
-        sprintf(s.info, "id:%d-aname", i);
+        snprintf(s.info, sizeof(s.info), "id:%d-aname", i);
         s.coord.x = rand() % 1000;
         s.coord.y = rand() % 100;
         Node *n = list->add(list, &s);
@@ -30,7 +30,7 @@ int main() {
     printlistfromtail(list, (void (*)(void *))printsurvivor);
 
     printf("\ntest by removing m elements\n");
-     Survivor s;
+    Survivor s;
 
     for (int i = 0; i < m; i++) {
         if (list->pop(list, &s) != NULL) printf("(%d,%d)-", s.coord.x, s.coord.y);

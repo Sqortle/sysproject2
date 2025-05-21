@@ -8,4 +8,5 @@
 
 extern Map map;
 extern List *survivors, *helpedsurvivors, *drones;
+extern int running;
 #endif

@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <json-c/json.h>
+#include <fcntl.h>
+#include <errno.h>
 #include "headers/globals.h"
 #include "headers/ai.h"
 #include "headers/map.h"
@@ -25,7 +27,6 @@ void process_status_update(int sock, struct json_object *jobj);
 void process_mission_complete(int sock, struct json_object *jobj);
 void process_heartbeat_response(int sock, struct json_object *jobj);
 void *heartbeat_thread(void *arg);
-void *view_thread_func(void *arg);
 
 // Global mutex for initialization
 pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -34,19 +35,22 @@ int initialized = 0;
 int initialize_globals() {
     pthread_mutex_lock(&init_mutex);
     if (initialized) {
+        printf("Globals already initialized\n");
         pthread_mutex_unlock(&init_mutex);
         return 0;
     }
 
     printf("Initializing lists...\n");
+    printf("Creating survivors list with capacity 1000...\n");
     survivors = create_list(sizeof(Survivor), 1000);
     if (!survivors) {
         printf("Failed to create survivors list\n");
         pthread_mutex_unlock(&init_mutex);
         return 1;
     }
-    printf("Survivors list created\n");
+    printf("Survivors list created successfully at %p\n", (void*)survivors);
 
+    printf("Creating helped survivors list with capacity 1000...\n");
     helpedsurvivors = create_list(sizeof(Survivor), 1000);
     if (!helpedsurvivors) {
         printf("Failed to create helped survivors list\n");
@@ -54,8 +58,9 @@ int initialize_globals() {
         pthread_mutex_unlock(&init_mutex);
         return 1;
     }
-    printf("Helped survivors list created\n");
+    printf("Helped survivors list created successfully at %p\n", (void*)helpedsurvivors);
 
+    printf("Creating drones list with capacity %d...\n", MAX_DRONES);
     drones = create_list(sizeof(Drone), MAX_DRONES);
     if (!drones) {
         printf("Failed to create drones list\n");
@@ -64,12 +69,14 @@ int initialize_globals() {
         pthread_mutex_unlock(&init_mutex);
         return 1;
     }
-    printf("Drones list created with capacity %d\n", MAX_DRONES);
+    printf("Drones list created successfully at %p\n", (void*)drones);
 
     printf("Initializing map...\n");
-    init_map(40, 30);
+    init_map(30, 40);  // height = 30, width = 40
+    printf("Map initialized with dimensions: %dx%d\n", map.width, map.height);
 
     initialized = 1;
+    printf("All globals initialized successfully\n");
     pthread_mutex_unlock(&init_mutex);
     return 0;
 }
@@ -110,16 +117,12 @@ int main() {
         cleanup_globals();
         return 1;
     }
-    printf("SDL window initialized successfully\n");
 
-    // Create view thread for visualization
-    pthread_t view_thread;
-    if (pthread_create(&view_thread, NULL, view_thread_func, NULL) != 0) {
-        printf("Failed to create view thread\n");
-        cleanup_globals();
-        return 1;
-    }
-    printf("View thread created\n");
+    // Initialize drones
+    initialize_drones();
+
+    // Set running flag before creating threads
+    running = 1;
 
     // Create survivor generator thread
     pthread_t survivor_thread;
@@ -139,64 +142,93 @@ int main() {
     }
     printf("AI controller thread created\n");
 
-    // Create heartbeat thread
-    pthread_t heartbeat_thread_id;
-    if (pthread_create(&heartbeat_thread_id, NULL, heartbeat_thread, NULL) != 0) {
-        printf("Failed to create heartbeat thread\n");
-        cleanup_globals();
-        return 1;
-    }
-    printf("Heartbeat thread created\n");
-
+    // Create server socket
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("Socket creation failed");
         cleanup_globals();
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
+    // Set socket options
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
+    // Set up server address
     struct sockaddr_in server_addr = {
         .sin_family = AF_INET,
         .sin_addr.s_addr = INADDR_ANY,
         .sin_port = htons(PORT)
     };
 
+    // Bind socket
     if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         perror("Bind failed");
         close(server_fd);
         cleanup_globals();
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
+    // Listen for connections
     if (listen(server_fd, MAX_DRONES) < 0) {
         perror("Listen failed");
         close(server_fd);
         cleanup_globals();
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
     printf("Server listening on port %d\n", PORT);
 
-    while (1) {
+    // Main event loop
+    SDL_Event event;
+    Uint32 lastDrawTime = SDL_GetTicks();
+    const int TARGET_FPS = 60;
+    const int FRAME_TIME = 1000 / TARGET_FPS;
+
+    while (running) {
+        // Handle SDL events
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT || 
+                (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_q)) {
+                printf("Received quit event\n");
+                running = 0;
+                break;
+            }
+        }
+
+        // Update display at target FPS
+        Uint32 currentTime = SDL_GetTicks();
+        if (currentTime - lastDrawTime >= FRAME_TIME) {
+            if (draw_map() != 0) {
+                printf("Error drawing map\n");
+                running = 0;
+                break;
+            }
+            lastDrawTime = currentTime;
+        }
+
+        // Accept new connections (non-blocking)
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
         int drone_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
-        if (drone_fd < 0) {
-            perror("Accept failed");
-            continue;
+        if (drone_fd >= 0) {
+            printf("Accepted connection from %s:%d\n", 
+                   inet_ntoa(client_addr.sin_addr), 
+                   ntohs(client_addr.sin_port));
+            pthread_t drone_thread;
+            int *drone_fd_ptr = malloc(sizeof(int));
+            *drone_fd_ptr = drone_fd;
+            pthread_create(&drone_thread, NULL, handle_drone, drone_fd_ptr);
         }
-        printf("Accepted connection from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
-        pthread_t drone_thread;
-        int *drone_fd_ptr = malloc(sizeof(int));
-        *drone_fd_ptr = drone_fd;
-        pthread_create(&drone_thread, NULL, handle_drone, drone_fd_ptr);
+        // Small delay to prevent excessive CPU usage
+        SDL_Delay(1);  // 1ms delay is enough since we have frame timing
     }
 
+    // Cleanup and exit
+    printf("Cleaning up...\n");
     close(server_fd);
+    cleanup_sdl();
     cleanup_globals();
     return 0;
 }
@@ -291,12 +323,19 @@ void process_handshake(int sock, struct json_object *jobj) {
     drone->id = atoi(drone_id + 1); // Extract number from "D1"
     drone->status = IDLE;
     drone->sock = sock;
+    
+    // Initialize random starting position
+    drone->coord.x = rand() % map.width;
+    drone->coord.y = rand() % map.height;
+    drone->target = drone->coord;  // Initially target is same as current position
+    
     pthread_mutex_init(&drone->lock, NULL);
 
     printf("Adding drone to list...\n");
     printf("Entering add function...\n");
     drones->add(drones, drone);
-    printf("Drone added to list\n");
+    printf("Drone added to list with ID %d at position (%d,%d)\n", 
+           drone->id, drone->coord.x, drone->coord.y);
 
     // Send HANDSHAKE_ACK response
     struct json_object *ack = json_object_new_object();
@@ -414,5 +453,3 @@ void *heartbeat_thread(void *arg) {
     }
     return NULL;
 }
-
-void *view_thread_func(void *arg); // Only declaration, no implementation here

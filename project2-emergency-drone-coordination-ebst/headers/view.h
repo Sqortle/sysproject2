@@ -32,6 +32,5 @@ void draw_drones();
 int draw_map();
 int init_sdl_window();
 void cleanup_sdl();
-void *view_thread_func(void *arg);
 
 #endif

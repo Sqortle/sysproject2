@@ -91,65 +91,64 @@ static Node *find_memcell_fornode(List *list) {
         return NULL;
     }
     
-    Node *node = NULL;
+    // First check the free list
     if (list->free_list) {
         printf("Found node in free list at %p\n", (void*)list->free_list);
-        node = list->free_list;
+        Node *node = list->free_list;
         list->free_list = node->next;
-        printf("[find_memcell_fornode] Returning.\n");
         return node;
     }
 
-    printf("Searching from last processed position %p...\n", (void*)list->lastprocessed);
-    Node *temp = list->lastprocessed;
-    while ((char *)temp < list->endaddress) {
-        printf("Checking node at %p (occupied=%d)\n", (void*)temp, temp->occupied);
-        if (temp->occupied == 0) {
-            printf("Found free node after last processed at %p\n", (void*)temp);
-            node = temp;
-            break;
+    // If no free nodes in free list, search from last processed position
+    Node *current = list->lastprocessed;
+    Node *start = (Node *)list->startaddress;
+    Node *end = (Node *)((char *)list->startaddress + (list->capacity * list->nodesize));
+    int nodes_checked = 0;
+    
+    // First search from last processed to end
+    while (current < end && nodes_checked < list->capacity) {
+        if (!current->occupied) {
+            printf("Found free node at %p\n", (void*)current);
+            return current;
         }
-        temp = (Node *)((char *)temp + list->nodesize);
+        current = (Node *)((char *)current + list->nodesize);
+        nodes_checked++;
     }
-
-    if (node == NULL) {
-        printf("Searching from start of list %p...\n", (void*)list->startaddress);
-        temp = (Node *)list->startaddress;
-        while (temp < list->lastprocessed) {
-            printf("Checking node at %p (occupied=%d)\n", (void*)temp, temp->occupied);
-            if (temp->occupied == 0) {
-                printf("Found free node before last processed at %p\n", (void*)temp);
-                node = temp;
-                break;
-            }
-            temp = (Node *)((char *)temp + list->nodesize);
+    
+    // If not found, search from start to last processed
+    current = start;
+    while (current < list->lastprocessed && nodes_checked < list->capacity) {
+        if (!current->occupied) {
+            printf("Found free node at %p\n", (void*)current);
+            return current;
         }
+        current = (Node *)((char *)current + list->nodesize);
+        nodes_checked++;
     }
-
-    if (node == NULL) {
-        printf("No free nodes found in list of capacity %d\n", list->capacity);
-    }
-    printf("[find_memcell_fornode] Returning.\n");
-    return node;
+    
+    printf("No free nodes found after checking %d nodes\n", nodes_checked);
+    return NULL;
 }
 
 Node *add(List *list, void *data) {
-    printf("Entering add function...\n");
+    printf("\n=== Adding node to list %p ===\n", (void*)list);
     if (!list || !data) {
         printf("Error: list or data is NULL\n");
         return NULL;
     }
     
     pthread_mutex_lock(&list->lock);
-    printf("[add] Lock acquired.\n");
+    printf("Lock acquired. Current elements: %d, capacity: %d\n", 
+           list->number_of_elements, list->capacity);
     
     if (list->number_of_elements >= list->capacity) {
-        printf("List is full! (elements: %d, capacity: %d)\n", list->number_of_elements, list->capacity);
+        printf("List is full! (elements: %d, capacity: %d)\n", 
+               list->number_of_elements, list->capacity);
         pthread_mutex_unlock(&list->lock);
         return NULL;
     }
 
-    printf("[add] Calling find_memcell_fornode...\n");
+    printf("Finding memory cell for new node...\n");
     Node *node = find_memcell_fornode(list);
     if (node == NULL) {
         printf("Failed to find memory cell\n");
@@ -162,29 +161,30 @@ Node *add(List *list, void *data) {
     printf("Copying data of size %zu bytes...\n", list->datasize);
     memcpy(node->data, data, list->datasize);
     
-    if (list->head != NULL) {
-        printf("Updating list head...\n");
-        Node *oldhead = list->head;
-        oldhead->prev = node;
-        node->prev = NULL;
-        node->next = oldhead;
-    } else {
+    // Initialize node pointers
+    node->prev = NULL;
+    node->next = NULL;
+    
+    if (list->head == NULL) {
+        // First node in list
         printf("First node in list\n");
-        node->prev = NULL;
-        node->next = NULL;
+        list->head = node;
+        list->tail = node;
+    } else {
+        // Add to head of list
+        printf("Adding to head of list (current head: %p)...\n", (void*)list->head);
+        node->next = list->head;
+        list->head->prev = node;
+        list->head = node;
     }
     
-    list->head = node;
     list->lastprocessed = node;
-    list->number_of_elements += 1;
-    if (list->tail == NULL) {
-        list->tail = list->head;
-    }
-    printf("Node added successfully. New element count: %d\n", list->number_of_elements);
+    list->number_of_elements++;
     
-    printf("[add] Unlocking and returning.\n");
+    printf("Node added successfully. New element count: %d\n", list->number_of_elements);
+    printf("List head: %p, List tail: %p\n", (void*)list->head, (void*)list->tail);
+    
     pthread_mutex_unlock(&list->lock);
-    printf("Lock released\n");
     return node;
 }
 

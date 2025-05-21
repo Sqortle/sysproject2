@@ -11,22 +11,17 @@ Drone *drone_fleet = NULL;
 int num_drones = 10;
 
 void initialize_drones() {
+    printf("Initializing drone system...\n");
     drone_fleet = malloc(sizeof(Drone) * num_drones);
-    srand(time(NULL));
-
-    for (int i = 0; i < num_drones; i++) {
-        drone_fleet[i].id = i;
-        drone_fleet[i].status = IDLE;
-        drone_fleet[i].coord = (Coord){rand() % map.width, rand() % map.height};
-        drone_fleet[i].target = drone_fleet[i].coord;
-        pthread_mutex_init(&drone_fleet[i].lock, NULL);
-
-        pthread_mutex_lock(&drones->lock);
-        drones->add(drones, &drone_fleet[i]);
-        pthread_mutex_unlock(&drones->lock);
-
-        pthread_create(&drone_fleet[i].thread_id, NULL, drone_behavior, &drone_fleet[i]);
+    if (!drone_fleet) {
+        printf("Failed to allocate memory for drone fleet\n");
+        return;
     }
+    
+    // Initialize the array but don't create drones
+    // They will connect via handshake
+    memset(drone_fleet, 0, sizeof(Drone) * num_drones);
+    printf("Drone system initialized, waiting for connections...\n");
 }
 
 void *drone_behavior(void *arg) {
