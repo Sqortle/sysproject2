@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+server
+drone_client
+controller
+
+# System files
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Log files
+*.log
+
+# Dependencies
+/build/
+/lib/
+
+# Temporary files
+*~
+*.tmp 
